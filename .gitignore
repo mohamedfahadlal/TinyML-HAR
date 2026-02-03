@@ -1,0 +1,16 @@
+# Jupyter
+.ipynb_checkpoints/
+
+# Dataset
+UCI HAR Dataset/
+data/UCI HAR Dataset/
+data/raw/
+*.csv
+
+# Models
+*.h5
+*.tflite
+
+# Python cache
+__pycache__/
+*.pyc
