@@ -290,7 +290,7 @@ history = model.fit(
     X_train_norm,
     y_train_combined,
     validation_data=(X_test_norm, y_test),
-    epochs=10,                                                      # Reduced epochs for quick testing; increase for better performance
+    epochs=30,                                                      # Reduced epochs for quick testing; increase for better performance
     batch_size=32,
     verbose=1
 )
@@ -410,7 +410,7 @@ for s in unique_subjects:
     model = build_light_deepconv_lstm()
 
     model.fit(X_train_loso, y_train_loso,
-              epochs=10,
+              epochs=30,
               batch_size=32,
               verbose=0)
 
