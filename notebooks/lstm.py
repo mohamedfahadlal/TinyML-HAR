@@ -1,3 +1,4 @@
+'''
 # =========================
 # Core Libraries
 # =========================
@@ -422,3 +423,273 @@ for s in unique_subjects:
     print("Accuracy:", acc)
 print("Mean LOSO Accuracy:", np.mean(loso_accuracies))
 print("Std LOSO Accuracy:", np.std(loso_accuracies))
+'''
+import numpy as np
+import os
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Input, Conv1D, LSTM, Dense, Dropout, BatchNormalization
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+# =========================
+# 1. DATA LOADING (Raw Separated)
+# =========================
+base_path = r"D:\Github\TinyML-HAR\data\UCI HAR Dataset"
+
+def load_dataset_split(subset):
+    path = os.path.join(base_path, subset, "Inertial Signals")
+    files = [
+        f"total_acc_x_{subset}.txt", f"total_acc_y_{subset}.txt", f"total_acc_z_{subset}.txt",
+        f"body_gyro_x_{subset}.txt", f"body_gyro_y_{subset}.txt", f"body_gyro_z_{subset}.txt"
+    ]
+    signals = [np.loadtxt(os.path.join(path, f)) for f in files]
+    X = np.stack(signals, axis=-1)
+    y = np.loadtxt(os.path.join(base_path, subset, f"y_{subset}.txt")).astype(int)
+    return X, y
+
+X_train_raw, y_train_raw = load_dataset_split("train")
+X_test_raw, y_test_raw   = load_dataset_split("test")
+
+# =========================
+# 2. THE FIREWALL: PREPROCESSING
+# =========================
+def process_labels(y_raw):
+    # Map 1,2,3 -> 0 (Walk), 4 -> 1 (Sit), 5 -> 2 (Stand), 6 -> 3 (Lying)
+    mapped = np.array([0 if l in [1,2,3] else (l-3) for l in y_raw])
+    final = mapped.copy()
+    # Transition detection (Class 4)
+    for i in range(1, len(mapped)-1):
+        if mapped[i] != mapped[i-1] or mapped[i] != mapped[i+1]:
+            final[i] = 4
+    return final
+
+def add_mags(X):
+    acc_mag = np.sqrt((X[:,:,:3]**2).sum(axis=2))[..., np.newaxis]
+    gyro_mag = np.sqrt((X[:,:,3:6]**2).sum(axis=2))[..., np.newaxis]
+    return np.concatenate([X, acc_mag, gyro_mag], axis=2)
+
+def generate_nob(num):
+    # Generates 1.0g gravity windows for Not-on-body (Class 5)
+    g = np.random.uniform(-1, 1, (num, 3))
+    g = (g / np.linalg.norm(g, axis=1)[:, None]) 
+    acc = np.tile(g[:, None, :], (1, 128, 1)) + np.random.normal(0, 0.02, (num, 128, 3))
+    gyro = np.random.normal(0, 0.005, (num, 128, 3))
+    return np.concatenate([acc, gyro], axis=2)
+
+# Step A: Labeling
+y_train = process_labels(y_train_raw)
+y_test  = process_labels(y_test_raw)
+
+# Step B: Add Not-On-Body (Class 5)
+X_train = np.concatenate([X_train_raw, generate_nob(1000)], axis=0)
+y_train = np.concatenate([y_train, np.full(1000, 5)], axis=0)
+X_test  = np.concatenate([X_test_raw, generate_nob(250)], axis=0)
+y_test  = np.concatenate([y_test, np.full(250, 5)], axis=0)
+
+# Step C: Magnitude Channels
+X_train_8ch = add_mags(X_train)
+X_test_8ch  = add_mags(X_test)
+
+# Step D: Normalization (Strictly using Train Stats)
+mu  = X_train_8ch.mean(axis=(0,1))
+std = X_train_8ch.std(axis=(0,1))
+
+X_train_final = (X_train_8ch - mu) / std
+X_test_final  = (X_test_8ch - mu) / std
+
+# =========================
+# 3. CLASS WEIGHTS (Critical Improvement)
+# =========================
+weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+class_weight_dict = dict(enumerate(weights))
+
+# =========================
+# 4. OPTIMIZED DeepConvLSTM MODEL
+# =========================
+model = Sequential([
+    Input(shape=(128, 8)),
+    
+    # Conv Layers (Spatial Feature Extraction)
+    Conv1D(32, 5, activation='relu', padding='same'),
+    BatchNormalization(),
+    Dropout(0.2),
+    
+    Conv1D(64, 5, activation='relu', padding='same'),
+    BatchNormalization(),
+    
+    # LSTM Layer (Temporal Feature Extraction)
+    LSTM(64, return_sequences=False),
+    Dropout(0.4),
+    
+    # Dense Classifier
+    Dense(32, activation='relu'),
+    Dense(6, activation='softmax')
+])
+
+model.compile(
+    optimizer=Adam(0.001),
+    loss='sparse_categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+# =========================
+# 5. TRAINING WITH CALLBACKS
+# =========================
+callbacks = [
+    EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
+]
+
+history = model.fit(
+    X_train_final, y_train,
+    validation_split=0.15, # Use a slice of train to monitor progress
+    epochs=50,
+    batch_size=32,
+    class_weight=class_weight_dict,
+    callbacks=callbacks,
+    verbose=1
+)
+
+# =========================
+# 6. EVALUATION
+# =========================
+print("\n--- FINAL TEST EVALUATION ---")
+y_pred = np.argmax(model.predict(X_test_final), axis=1)
+print(classification_report(y_test, y_pred, target_names=['Walk','Sit','Stand','Lying','Trans','NOB']))
+
+cm = confusion_matrix(y_test, y_pred)
+plt.figure(figsize=(8,6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['Walk','Sit','Stand','Lying','Trans','NOB'])
+plt.xlabel("Predicted")
+plt.ylabel("True")
+plt.title("Confusion Matrix - Optimized DeepConvLSTM")
+plt.show()
+
+# Per-class metrics
+print("\nPer-Class Metrics:")
+for i in range(6):
+    class_indices = np.where(y_test == i)[0]
+    if len(class_indices) > 0:
+        print(f"Class {i} ({['Walk','Sit','Stand','Lying','Trans','NOB'][i]}):")
+        print(classification_report(y_test[class_indices], y_pred[class_indices], digits=4))
+
+    # Within-class accuracy
+    acc_within_class = accuracy_score(y_test[class_indices], y_pred[class_indices])
+    print(f"  Within Class Accuracy: {acc_within_class:.4f}")
+    #all classes confusion matrix
+    cm_class = confusion_matrix(y_test[class_indices], y_pred[class_indices])
+    plt.figure(figsize=(4,3))
+    sns.heatmap(cm_class, annot=True
+                , fmt='d', cmap='Blues')
+    plt.xlabel("Predicted") 
+    plt.ylabel("True")
+    plt.title(f"Confusion Matrix for Class {i} ({['Walk','Sit','Stand','Lying','Trans','NOB'][i]})")
+    plt.show()  
+
+    # all evaluation metrics for class i
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        y_test[class_indices], y_pred[class_indices], average='binary'
+    )   
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall:    {recall:.4f}")
+    print(f"  F1 Score:  {f1:.4f}")
+
+    # per class accuracy for class i
+    acc_within_class = accuracy_score(y_test[class_indices], y_pred[class_indices])
+    print(f"  Within Class Accuracy: {acc_within_class:.4f}")
+
+    # per class confusion matrix for class i
+    cm_class = confusion_matrix(y_test[class_indices], y_pred[class_indices])
+    plt.figure(figsize=(4,3))
+    sns.heatmap(cm_class, annot=True
+                , fmt='d', cmap='Blues')
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title(f"Confusion Matrix for Class {i} ({['Walk','Sit','Stand','Lying','Trans','NOB'][i]})")
+    plt.show()
+
+
+#LOSO CV
+LOSO_accuracies = []
+subjects = np.concatenate([np.loadtxt(os.path.join(base_path, "train", "subject_train.txt")),
+                            np.loadtxt(os.path.join(base_path, "test", "subject_test.txt"))])
+unique_subjects = np.unique(subjects)
+for s in unique_subjects:
+    print(f"LOSO CV - Testing on Subject {s}")
+    test_idx = np.where(subjects == s)[0]
+    train_idx = np.where(subjects != s)[0]
+
+    X_train_loso = X_train_final[train_idx]
+    y_train_loso = y_train[train_idx]
+    X_test_loso  = X_train_final[test_idx]  # Using train split for LOSO
+    y_test_loso  = y_train[test_idx]
+
+    model_loso = Sequential([
+        Input(shape=(128, 8)),
+        Conv1D(32, 5, activation='relu', padding='same'),
+        BatchNormalization(),
+        Dropout(0.2),
+        Conv1D(64, 5, activation='relu', padding='same'),
+        BatchNormalization(),
+        LSTM(64, return_sequences=False),
+        Dropout(0.4),
+        Dense(32, activation='relu'),
+        Dense(6, activation='softmax')
+    ])
+    
+    model_loso.compile(
+        optimizer=Adam(0.001),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy']
+    )
+    
+    model_loso.fit(
+        X_train_loso, y_train_loso,
+        epochs=30,
+        batch_size=32,
+        class_weight=class_weight_dict,
+        verbose=0
+    )
+    
+    y_pred_loso = np.argmax(model_loso.predict(X_test_loso), axis=1)
+    acc = accuracy_score(y_test_loso, y_pred_loso)
+    LOSO_accuracies.append(acc)
+    print(f"Subject {s} Accuracy: {acc:.4f}")
+print(f"\nMean LOSO Accuracy: {np.mean(LOSO_accuracies):.4f}")
+
+# per class metrics for LOSO
+print("\nLOSO CV - Per Class Metrics:")
+for i in range(6):
+    class_indices = np.where(y_test_loso == i)[0]
+    if len(class_indices) > 0:
+        print(f"Class {i}:")
+        print(classification_report(y_test_loso[class_indices], y_pred_loso[class_indices], digits=4))
+
+        #within class accuracy for LOSO
+        acc_within_class = accuracy_score(y_test_loso[class_indices], y_pred_loso[class_indices])
+        print(f"  Within Class Accuracy: {acc_within_class:.4f}")
+
+        #with class confusion matrix for LOSO
+        cm_class = confusion_matrix(y_test_loso[class_indices], y_pred_loso[class_indices
+        ])
+        plt.figure(figsize=(4,3))
+
+        sns.heatmap(cm_class, annot=True, fmt='d', cmap='Blues')
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.title(f"LOSO CV - Confusion Matrix for Class {i}")
+        plt.show()
+
+        #per class precision, recall, f1 for LOSO
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_test_loso[class_indices], y_pred_loso[class_indices], average='binary'
+        )
+        print(f"  Precision: {precision:.4f}")
+        print(f"  Recall:    {recall:.4f}")
+        print(f"  F1 Score:  {f1:.4f}")
+
+
