@@ -1,16 +1,44 @@
-# Jupyter
+# =================================================================
+# TinyML HAR Project Git Ignore Registry
+# PROJECT: Elder-Care Real-Time HAR System
+# =================================================================
+
+# --- Jupyter Notebook Artifacts ---
 .ipynb_checkpoints/
+*/.ipynb_checkpoints/*
 
-# Dataset
-UCI HAR Dataset/
-data/UCI HAR Dataset/
-data/raw/
+# --- Active Python Virtual Environments ---
+.venv/
+**/_venv/
+**/__venv/
+env/
+venv/
+
+# --- Dynamic Datasets Registry (Updated for WISDM .txt raw streams) ---
+# This blocks your raw data folder entirely, including all .txt, .csv, or folder structures inside it
+data/
+**/data/
 *.csv
+*.txt
+*.zip
+*.tar.gz
 
-# Models
+# --- Compiled Machine Learning Formats ---
+*.npy
+*.npz
+*.keras
 *.h5
+
+# --- Production Edge Deployment Exceptions ---
 *.tflite
 
-# Python cache
+# --- Python Engine Caching Clutter ---
 __pycache__/
+**/__pycache__/
 *.pyc
+
+# --- Operating System & IDE Specific Files ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

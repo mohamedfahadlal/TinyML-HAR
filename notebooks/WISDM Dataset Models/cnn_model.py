@@ -12,7 +12,7 @@ y_test = np.load("y_test_processed.npy")
 print(f"Loaded successfully! Training shapes: {X_train.shape}")
 
 # 2. Define the Lightweight TinyML Network
-def build_tinyml_har_model(input_shape=(50, 11), num_classes=20):
+def build_tinyml_har_model(input_shape=(50, 11), num_classes=7):
     model = models.Sequential(name="Separable_CNN_GRU_TinyML")
     
     # Feature Extraction: Depthwise Separable 1D-CNN
@@ -36,7 +36,7 @@ def build_tinyml_har_model(input_shape=(50, 11), num_classes=20):
     return model
 
 # 3. Instantiate and Compile
-model = build_tinyml_har_model(input_shape=(50, 11), num_classes=20)
+model = build_tinyml_har_model(input_shape=(50, 11), num_classes=7)
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
     loss='sparse_categorical_crossentropy',
